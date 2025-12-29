@@ -4,8 +4,8 @@ import time
 from datetime import datetime, timedelta
 
 
-TELEGRAM_TOKEN = "token_vk"
-OPENWEATHER_API_KEY = "token"
+TELEGRAM_TOKEN = "8408071612:AAGLGXap5PITGGFxCS9ilLadCzr5HBNxX0M"
+OPENWEATHER_API_KEY = "830c59b19e3968c7636dad1512feefb8"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
@@ -202,4 +202,5 @@ if __name__ == '__main__':
     try:
         bot.polling(none_stop=True, timeout=30)
     except Exception as e:
+
         print(f"🛑 Ошибка: {e}")
