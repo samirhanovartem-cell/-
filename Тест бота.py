@@ -1,9 +1,10 @@
+# Подключение библиотек для работы
 import telebot
 import requests
 import time
 from datetime import datetime, timedelta
 
-
+# Подключение API ключей
 TELEGRAM_TOKEN = "8408071612:AAGLGXap5PITGGFxCS9ilLadCzr5HBNxX0M"
 OPENWEATHER_API_KEY = "830c59b19e3968c7636dad1512feefb8"
 
@@ -37,7 +38,7 @@ CITIES = [
 user_data = {}
 
 
-# --- Команды ---
+#  Команды 
 @bot.message_handler(commands=['start'])
 def start(message):
     chat_id = message.chat.id
@@ -90,7 +91,7 @@ def data_cmd(message):
     bot.send_message(chat_id, "Выберите день:", reply_markup=markup)
 
 
-# --- Обработка ввода ---
+#  Обработка ввода 
 @bot.message_handler(func=lambda m: True)
 def handle_text(message):
     chat_id = message.chat.id
@@ -142,7 +143,7 @@ def handle_text(message):
     )
 
 
-# --- Получение погоды ---
+#  Получение погоды 
 def get_weather(bot, chat_id, city, date):
     url = "http://api.openweathermap.org/data/2.5/forecast"
     params = {
@@ -194,7 +195,7 @@ def get_weather(bot, chat_id, city, date):
     except Exception as e:
         bot.send_message(chat_id, f"⚠️ Ошибка при получении погоды: {str(e)}")
 
-
+# Запускаем бота
 if __name__ == '__main__':
     print("🚀 Удаляем webhook и запускаем бота...")
     bot.remove_webhook()
@@ -204,3 +205,4 @@ if __name__ == '__main__':
     except Exception as e:
 
         print(f"🛑 Ошибка: {e}")
+
