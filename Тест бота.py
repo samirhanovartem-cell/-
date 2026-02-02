@@ -1,16 +1,26 @@
-# Подключение библиотек для работы
-import telebot  # Библиотека для создания Telegram-ботов (pyTelegramBotAPI)
-import requests  # Для отправки HTTP-запросов к OpenWeather API
-import time  # Для задержек (например, после удаления webhook)
-from datetime import datetime, timedelta  # Для работы с датами и временем
+#  ИМПОРТ СТАНДАРТНЫХ И СТОРОННИХ БИБЛИОТЕК
 
-# Подключение API ключей (замените на реальные!)
-TELEGRAM_TOKEN = "8408071612:AAGLGXap5PITGGFxCS9ilLadCzr5HBNxX0M"  # Токен вашего Telegram-бота от @BotFather
-OPENWEATHER_API_KEY = "830c59b19e3968c7636dad1512feefb8"  # Ключ от OpenWeatherMap API
+import telebot          # Основная библиотека для создания Telegram-ботов (pyTelegramBotAPI)
+import requests         # Отправка HTTP-запросов к внешним API (OpenWeatherMap)
+import time             # Работа со временем (паузы, таймауты)
+from datetime import datetime, timedelta  # Обработка дат и времени
+import sqlite3          # Встроенная библиотека для работы с локальной БД SQLite
 
-bot = telebot.TeleBot(TELEGRAM_TOKEN)  # Создание экземпляра бота с вашим токеном
+#  НАСТРОЙКА API-КЛЮЧЕЙ 
 
-# Список городов, доступных для выбора (Россия + крупные мировые города)
+# Токен Telegram-бота, полученный у @BotFather в Telegram
+TELEGRAM_TOKEN = "8408071612:AAGLGXap5PITGGFxCS9ilLadCzr5HBNxX0M"
+
+# API-ключ от сервиса OpenWeatherMap 
+OPENWEATHER_API_KEY = "830c59b19e3968c7636dad1512feefb8"
+
+# Создание экземпляра бота с передачей токена для аутентификации в Telegram
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+#  СПИСОК ДОСТУПНЫХ ГОРОДОВ ДЛЯ ВЫБОРА
+
+# Содержит 100+ городов: крупные города России + мировые мегаполисы
+# Используется для формирования кнопок и валидации ввода пользователя
 CITIES = [
     "Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург", "Казань",
     "Нижний Новгород", "Челябинск", "Самара", "Омск", "Ростов-на-Дону",
@@ -34,100 +44,226 @@ CITIES = [
     "Лиссабон", "Дублин", "Рейкьявик", "Кейптаун"
 ]
 
-# Хранилище данных пользователей: {chat_id: {"city": "Москва"}}
-user_data = {}  # Временное хранилище в оперативной памяти (не сохраняется после перезапуска)
+#  ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ SQLITE
 
-# Обработчик команды /start — приветствие и инструкция
+# Создание/открытие файла базы данных 'users.db' в текущей директории
+# Параметр check_same_thread=False разрешает использование соединения 
+# в однопоточном режиме бота (безопасно для telebot)
+conn = sqlite3.connect('users.db', check_same_thread=False)
+
+# Создание курсора — объекта для выполнения SQL-запросов
+cursor = conn.cursor()
+
+# Создание таблицы 'users', если она ещё не существует
+# Структура таблицы:
+#   • chat_id (INTEGER, PRIMARY KEY) — уникальный ID чата в Telegram
+#   • city (TEXT, NOT NULL) — название города, выбранного пользователем
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        chat_id INTEGER PRIMARY KEY,
+        city TEXT NOT NULL
+    )
+''')
+
+# Фиксация изменений в базе данных (сохранение структуры таблицы на диск)
+conn.commit()
+
+#  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ДАННЫХ
+
+def save_user_city(chat_id, city):
+    """
+    Сохраняет или обновляет город пользователя в базе данных.
+    
+    Параметры:
+        chat_id (int): Уникальный идентификатор чата пользователя в Telegram
+        city (str): Название города для сохранения
+    
+    Особенности:
+        • Использует INSERT OR REPLACE — если запись существует, она обновляется
+        • Параметризованный запрос (?, ?) защищает от SQL-инъекций
+        • Автоматическая фиксация изменений через conn.commit()
+    """
+    cursor.execute('INSERT OR REPLACE INTO users (chat_id, city) VALUES (?, ?)', (chat_id, city))
+    conn.commit()
+
+
+def get_user_city(chat_id):
+    """
+    Получает сохранённый город пользователя из базы данных.
+    
+    Параметры:
+        chat_id (int): Уникальный идентификатор чата пользователя в Telegram
+    
+    Возвращает:
+        str или None: Название города, если запись найдена, иначе None
+    
+    Логика:
+        • Выполняет SELECT-запрос с фильтрацией по chat_id
+        • fetchone() возвращает первую строку результата или None
+        • result[0] извлекает значение из первого столбца (city)
+    """
+    cursor.execute('SELECT city FROM users WHERE chat_id = ?', (chat_id,))
+    result = cursor.fetchone()
+    return result[0] if result else None
+
+#  ОБРАБОТЧИК КОМАНДЫ /start — ПРИВЕТСТВИЕ ПОЛЬЗОВАТЕЛЯ
+
 @bot.message_handler(commands=['start'])
 def start(message):
-    chat_id = message.chat.id  # Уникальный ID чата с пользователем
-    user_data[chat_id] = user_data.get(chat_id, {})  # Гарантируем наличие записи для пользователя
-    bot.send_message(
-        chat_id,
-        "🌤 Привет! Я бот погоды.\n"
-        "1. Нажмите /city и выберите город.\n"
-        "2. Нажмите /data — выберите день (прогноз на 4 дня)."
-    )
+    """
+    Обрабатывает команду /start.
+    Показывает персонализированное приветствие с учётом сохранённого города.
+    """
+    chat_id = message.chat.id          # Уникальный ID чата пользователя
+    city = get_user_city(chat_id)      # Попытка получить сохранённый город из БД
+    
+    if city:
+        # Приветствие для возвратившегося пользователя с сохранённым городом
+        bot.send_message(
+            chat_id,
+            f"🌤 Добро пожаловать обратно! Ваш город: {city}\n"
+            "Нажмите /data — выбрать день (прогноз на 4 дня).\n"
+            "Или /city — сменить город."
+        )
+    else:
+        # Приветствие для нового пользователя
+        bot.send_message(
+            chat_id,
+            "🌤 Привет! Я бот погоды.\n"
+            "1. Нажмите /city и выберите город.\n"
+            "2. Нажмите /data — выбрать день (прогноз на 4 дня)."
+        )
 
-# Обработчик команды /help — справка по использованию
+#  ОБРАБОТЧИК КОМАНДЫ /help — СПРАВКА ПО ИСПОЛЬЗОВАНИЮ
+
 @bot.message_handler(commands=['help'])
 def help_cmd(message):
+    """
+    Обрабатывает команду /help.
+    Отправляет пользователю инструкцию по использованию бота.
+    """
     bot.send_message(
         message.chat.id,
         "🛠 Как пользоваться:\n"
-        "- /city — выбрать город из списка (включая Курган)\n"
+        "- /city — выбрать город из списка\n"
         "- /data — выбрать день недели (сегодня + 3 дня)\n"
         "- Бот покажет погоду на выбранный день."
     )
 
-# Обработчик команды /city — показывает клавиатуру с выбором города
+#  ОБРАБОТЧИК КОМАНДЫ /city — ВЫБОР ГОРОДА
+
 @bot.message_handler(commands=['city'])
 def city_cmd(message):
-    chat_id = message.chat.id
-    user_data[chat_id] = user_data.get(chat_id, {})  # Инициализация данных, если ещё нет
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)  # Одноразовая клавиатура
+    """
+    Обрабатывает команду /city.
+    Отображает клавиатуру с выбором города из списка CITIES.
+    """
+    # Создание интерактивной клавиатуры под полем ввода
+    #   • resize_keyboard=True — компактный размер клавиатуры
+    #   • one_time_keyboard=True — клавиатура скроется после выбора
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    
+    # Добавление кнопок со всеми городами из списка CITIES
     for city in CITIES:
-        markup.add(city)  # Добавляем каждый город как кнопку
-    bot.send_message(chat_id, "Выберите город:", reply_markup=markup)  # Отправляем клавиатуру
+        markup.add(city)  # Каждый город становится отдельной кнопкой
+    
+    # Отправка сообщения с прикреплённой клавиатурой
+    bot.send_message(message.chat.id, "Выберите город:", reply_markup=markup)
 
-# Обработчик команды /data — показывает выбор дня (сегодня + 3 дня)
+#  ОБРАБОТЧИК КОМАНДЫ /data — ВЫБОР ДАТЫ
+
 @bot.message_handler(commands=['data'])
 def data_cmd(message):
+    """
+    Обрабатывает команду /data.
+    Отображает клавиатуру с выбором дня (сегодня + 3 дня).
+    Перед показом проверяет, выбран ли город пользователем.
+    """
     chat_id = message.chat.id
-    if chat_id not in user_data or not user_data[chat_id].get('city'):  # Проверка: город уже выбран?
+    city = get_user_city(chat_id)  # Получение сохранённого города из БД
+    
+    # Проверка: город должен быть выбран до запроса прогноза
+    if not city:
         bot.send_message(chat_id, "❌ Сначала выберите город через /city.")
-        return
-    today = datetime.now().date()  # Текущая дата
-    dates = [today + timedelta(days=i) for i in range(4)]  # Список из 4 дат: сегодня, завтра, послезавтра, через 3 дня
+        return  # Прерывание выполнения функции
+    
+    # Расчёт списка из 4 дат: сегодня, завтра, послезавтра, через 3 дня
+    today = datetime.now().date()
+    dates = [today + timedelta(days=i) for i in range(4)]
+    
+    # Создание клавиатуры для выбора даты
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     for d in dates:
-        day_name = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][d.weekday()]  # Короткое название дня недели
-        btn_text = f"{day_name} {d.strftime('%d.%m')}"  # Формат: "Пн 18.01"
+        # Получение короткого названия дня недели (Пн, Вт, Ср...)
+        day_name = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][d.weekday()]
+        # Форматирование кнопки: "Пн 24.11"
+        btn_text = f"{day_name} {d.strftime('%d.%m')}"
         markup.add(btn_text)
+    
+    # Отправка клавиатуры с выбором дня
     bot.send_message(chat_id, "Выберите день:", reply_markup=markup)
 
-# Обработчик ЛЮБОГО текстового сообщения (реакция на нажатие кнопок)
+#  УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ
+
 @bot.message_handler(func=lambda m: True)
 def handle_text(message):
+    """
+    Обрабатывает ЛЮБОЕ текстовое сообщение от пользователя.
+    Выполняется после специфичных обработчиков (/start, /city, /data).
+    Логика:
+        1. Если сообщение — название города из списка → сохранить в БД
+        2. Если сообщение — дата в формате "Пн 24.11" → показать прогноз
+        3. Иначе — показать подсказку
+    """
     chat_id = message.chat.id
-    text = message.text.strip()  # Убираем лишние пробелы
-
-    # Если пользователь выбрал город из списка
+    text = message.text.strip()  # Удаление пробелов по краям текста
+    
+    #  Пользователь выбрал город из списка
     if text in CITIES:
-        user_data[chat_id] = user_data.get(chat_id, {})
-        user_data[chat_id]['city'] = text  # Сохраняем выбранный город
-        bot.send_message(chat_id, f"✅ Город установлен: {text}. Теперь нажмите /data.")
-        return
-
-    # Если пользователь выбрал дату (формат: "Пн 24.11")
+        save_user_city(chat_id, text)  # Сохранение города в БД
+        bot.send_message(chat_id, f"✅ Город сохранён: {text}. Теперь нажмите /data.")
+        return  # Прерывание дальнейшей обработки
+    
+    #  Пользователь выбрал дату (формат: "Пн 24.11")
     if any(text.startswith(d) for d in ["Пн ", "Вт ", "Ср ", "Чт ", "Пт ", "Сб ", "Вс "]):
-        if chat_id not in user_data or not user_data[chat_id].get('city'):
+        city = get_user_city(chat_id)  # Получение сохранённого города
+        
+        # Двойная проверка: город должен быть выбран
+        if not city:
             bot.send_message(chat_id, "❌ Сначала выберите город через /city.")
             return
+        
         try:
-            date_str = text.split()[1]  # Извлекаем "24.11" из "Пн 24.11"
-            day, month = map(int, date_str.split('.'))  # Разбиваем на день и месяц
+            # Извлечение части с датой ("24.11") из текста кнопки ("Пн 24.11")
+            date_str = text.split()[1]
+            # Разделение на день и месяц, преобразование в числа
+            day, month = map(int, date_str.split('.'))
+            
+            # Сборка полной даты с текущим годом
             today = datetime.now().date()
             year = today.year
-            target_date = datetime(year, month, day).date()  # Собираем дату
-
-            # Коррекция года (если 31 декабря при текущей дате 1 января)
+            target_date = datetime(year, month, day).date()
+            
+            # Коррекция года для случаев перехода через Новый год
+            # (например: сегодня 2 января, пользователь выбрал "31.12")
             if target_date < today and (today - target_date).days > 300:
                 target_date = datetime(year + 1, month, day).date()
-
-            # Проверка: дата в разрешённом диапазоне (сегодня + 3 дня)?
+            
+            # Проверка: дата должна быть в диапазоне сегодня + 3 дня
             valid_dates = [today + timedelta(days=i) for i in range(4)]
             if target_date not in valid_dates:
                 bot.send_message(chat_id, "❌ Эта дата вне диапазона. Используйте кнопки.")
                 return
-
-            city = user_data[chat_id]['city']
-            get_weather(bot, chat_id, city, target_date)  # Получаем и отправляем прогноз
+            
+            # Получение и отображение прогноза погоды
+            get_weather(bot, chat_id, city, target_date)
+        
         except Exception as e:
+            # Обработка ошибок парсинга даты
             bot.send_message(chat_id, "❌ Не удалось распознать дату. Используйте кнопки.")
         return
-
-    # Любое другое сообщение — подсказка
+    
+    #  Неизвестное сообщение — показ подсказки
     bot.send_message(
         chat_id,
         "Пожалуйста, используйте:\n"
@@ -135,69 +271,126 @@ def handle_text(message):
         "/data — выбрать день"
     )
 
-# Функция получения и отправки прогноза погоды
+#  ФУНКЦИЯ ПОЛУЧЕНИЯ И ОТОБРАЖЕНИЯ ПРОГНОЗА ПОГОДЫ
+
 def get_weather(bot, chat_id, city, date):
-    url = "http://api.openweathermap.org/data/2.5/forecast"  #  Прогноз на 5 дней
+    """
+    Получает прогноз погоды с OpenWeatherMap API и отправляет его пользователю.
+    
+    Параметры:
+        bot (TeleBot): Экземпляр бота для отправки сообщений
+        chat_id (int): ID чата пользователя
+        city (str): Название города для запроса
+        date (date): Дата прогноза (объект datetime.date)
+    
+    Логика:
+        1. Отправка запроса к API OpenWeatherMap (прогноз на 5 дней)
+        2. Поиск прогноза, ближайшего к 12:00 указанной даты
+        3. Форматирование и отправка сообщения с погодой
+    """
+    # URL эндпоинта API для прогноза на 5 дней (данные с шагом 3 часа)
+    url = "http://api.openweathermap.org/data/2.5/forecast"
+    
+    # Параметры запроса к API
     params = {
         'q': city,               # Название города
-        'appid': OPENWEATHER_API_KEY,  # Ваш API-ключ
-        'units': 'metric',       # Температура в °C
-        'lang': 'ru'             # Описание погоды на русском
+        'appid': OPENWEATHER_API_KEY,  # API-ключ для аутентификации
+        'units': 'metric',       # Единицы измерения: градусы Цельсия
+        'lang': 'ru'             # Язык описания погоды: русский
     }
-
+    
     try:
-        resp = requests.get(url, params=params, timeout=10)  # Запрос с таймаутом 10 сек
-        if resp.status_code != 200:  # Проверка успешности запроса
+        # Отправка GET-запроса к API с таймаутом 10 секунд
+        resp = requests.get(url, params=params, timeout=10)
+        
+        # Проверка статуса ответа 
+        if resp.status_code != 200:
+            # Извлечение сообщения об ошибке из JSON-ответа API
             error_msg = resp.json().get('message', 'Unknown error')
             bot.send_message(chat_id, f"❌ Ошибка OpenWeather: {error_msg}")
             return
-
-        data = resp.json()  # Парсинг JSON-ответа
-        best = None
-        min_diff = 999
-        # Ищем прогноз, ближайший к 12:00 указанного дня
+        
+        # Парсинг JSON-ответа в Python-словарь
+        data = resp.json()
+        
+        # Поиск прогноза, ближайшего к полудню (12:00) указанной даты
+        best = None      # Лучший найденный прогноз
+        min_diff = 999   # Минимальная разница в часах до 12:00
+        
         for item in data['list']:
-            dt = datetime.fromtimestamp(item['dt'])  # Преобразуем timestamp в datetime
+            # Преобразование timestamp в объект datetime
+            dt = datetime.fromtimestamp(item['dt'])
+            
+            # Проверка: прогноз относится к запрошенной дате
             if dt.date() == date:
-                diff = abs(dt.hour - 12)  # Расстояние до полудня
+                # Расчёт разницы между часом прогноза и 12:00
+                diff = abs(dt.hour - 12)
+                # Выбор прогноза с минимальной разницей
                 if diff < min_diff:
                     min_diff = diff
                     best = item
-
-        if not best:  # Если подходящих записей нет
+        
+        # Проверка: найден ли подходящий прогноз
+        if not best:
             bot.send_message(chat_id, "🌤 Прогноз на этот день не найден.")
             return
-
-        # Извлечение данных о погоде
-        temp = best['main']['temp']  # Температура
+        
+        # Извлечение параметров погоды из структуры JSON
+        temp = best['main']['temp']                      # Температура (°C)
         desc = best['weather'][0]['description'].capitalize()  # Описание (с заглавной буквы)
-        hum = best['main']['humidity']  # Влажность (%)
-        wind = best['wind']['speed']  # Скорость ветра (м/с)
-
-        # Полное название дня недели для красивого вывода
-        weekday_names = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+        hum = best['main']['humidity']                   # Влажность (%)
+        wind = best['wind']['speed']                     # Скорость ветра (м/с)
+        
+        # Получение полного названия дня недели для красивого вывода
+        weekday_names = ["понедельник", "вторник", "среда", "четверг", 
+                         "пятница", "суббота", "воскресенье"]
         weekday = weekday_names[date.weekday()]
-
-        # Формирование и отправка сообщения с прогнозом
+        
+        # Формирование итогового сообщения с эмодзи для лучшей читаемости
         msg = (
             f"🌤 Погода в {city} на {weekday}, {date.strftime('%d.%m')}:\n"
-            f"🌡 {temp:.1f}°C\n"
+            f"🌡 {temp:.1f}°C\n"          # Форматирование: 1 знак после запятой
             f"☁️ {desc}\n"
             f"💧 Влажность: {hum}%\n"
             f"💨 Ветер: {wind} м/с"
         )
+        
+        # Отправка сообщения пользователю
         bot.send_message(chat_id, msg)
-
+    
     except Exception as e:
+        # Перехват любых исключений (сетевые ошибки, проблемы с парсингом)
         bot.send_message(chat_id, f"⚠️ Ошибка при получении погоды: {str(e)}")
 
-# Запуск бота
-if __name__ == '__main__':
-    print("🚀 Удаляем webhook и запускаем бота...")
-    bot.remove_webhook()  # Убираем возможный webhook (чтобы не мешал polling)
-    time.sleep(1)  # Пауза для применения изменений
-    try:
-        bot.polling(none_stop=True, timeout=30)  # Запуск в режиме long polling
-    except Exception as e:
-        print(f"🛑 Ошибка: {e}")  # Вывод критических ошибок в консоль
+#  ЗАПУСК БОТА 
 
+if __name__ == '__main__':
+    """
+    Основной блок выполнения программы.
+    Выполняется только при прямом запуске скрипта
+    """
+    print(" Удаляем webhook и запускаем бота...")
+    
+    # Отключение режима вебхуков 
+    bot.remove_webhook()
+    
+    # Пауза 1 секунда для применения изменений на стороне Telegram
+    time.sleep(1)
+    
+    try:
+        # Запуск бота в режиме долгого опроса (long polling)
+        #   • none_stop=True — продолжать работу при возникновении ошибок
+        #   • timeout=30 — таймаут одного запроса к серверам Telegram
+        bot.polling(none_stop=True, timeout=30)
+    
+    except KeyboardInterrupt:
+        # Обработка остановки через Ctrl+C
+        print("\n Остановка бота...")
+        conn.close()  # Корректное закрытие соединения с БД
+        print(" Соединение с БД закрыто")
+    
+    except Exception as e:
+        # Обработка любых критических ошибок
+        print(f" Критическая ошибка: {e}")
+        conn.close()  # Гарантированное закрытие БД даже при падении
+        print(" Соединение с БД закрыто (аварийное завершение)")
