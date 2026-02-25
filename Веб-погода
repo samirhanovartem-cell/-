@@ -1,0 +1,152 @@
+from flask import Flask, render_template, request, jsonify
+import requests
+from datetime import datetime, timedelta
+import webbrowser
+import threading
+import time
+
+app = Flask(__name__)
+
+# ВАШ РЕАЛЬНЫЙ API КЛЮЧ (замените на свой!)
+API_KEY = "830c59b19e3968c7636dad1512feefb8"  # ← ЗАМЕНИТЕ НА СВОЙ КЛЮЧ!
+
+
+def get_weather(city, date_str):
+    base_url = "https://api.openweathermap.org/data/2.5/forecast"  # УБРАНЫ ПРОБЕЛЫ!
+
+    params = {
+        'q': city,
+        'appid': API_KEY,
+        'units': 'metric',
+        'lang': 'ru'
+    }
+
+    try:
+        response = requests.get(base_url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+
+        for item in data['list']:
+            forecast_date = datetime.fromtimestamp(item['dt']).date()
+            if forecast_date == target_date:
+                return {
+                    'success': True,
+                    'city': data['city']['name'],
+                    'country': data['city']['country'],
+                    'temp': round(item['main']['temp']),
+                    'feels_like': round(item['main']['feels_like']),
+                    'humidity': item['main']['humidity'],
+                    'description': item['weather'][0]['description'],
+                    'icon': item['weather'][0]['icon'],
+                    'wind_speed': item['wind']['speed'],
+                    'pressure': item['main']['pressure']
+                }
+
+        return {'success': False, 'error': 'Прогноз на эту дату не найден'}
+
+    except requests.exceptions.RequestException as e:
+        return {'success': False, 'error': f'Ошибка получения данных: {str(e)}'}
+    except Exception as e:
+        return {'success': False, 'error': f'Ошибка: {str(e)}'}
+
+
+def get_weather_advice(weather_data):
+    temp = weather_data['temp']
+    description = weather_data['description']
+    humidity = weather_data['humidity']
+    wind_speed = weather_data['wind_speed']
+
+    advice = []
+
+    if temp < -10:
+        advice.append("❄️ Очень холодно! Обязательно наденьте шапку, шарф, перчатки и тёплую куртку.")
+    elif -10 <= temp < 0:
+        advice.append("🧥 Холодно. Одевайтесь тепло, не забудьте перчатки.")
+    elif 0 <= temp < 10:
+        advice.append("🧥 Прохладно. Возьмите тёплую куртку или пальто.")
+    elif 10 <= temp < 20:
+        advice.append("🧥 + 🧥 Умеренно. Лёгкая куртка или ветровка подойдёт отлично.")
+    elif 20 <= temp < 25:
+        advice.append("👕 + 👖 Комфортно! Футболка и джинсы — идеальный выбор.")
+    elif 25 <= temp < 30:
+        advice.append("👕 + 🩳 Жарко. Одевайтесь легко, не забудьте головной убор.")
+    else:
+        advice.append("🔥 Очень жарко! Избегайте пребывания на солнце в обеденное время, пейте больше воды.")
+
+    if 'дождь' in description.lower() or 'ливень' in description.lower():
+        advice.append("☔ Возьмите зонт и непромокаемую обувь.")
+    elif 'снег' in description.lower():
+        advice.append("🌨️ Ожидается снег. Одевайтесь по сезону, будьте осторожны на дорогах.")
+    elif 'облачно' in description.lower() or 'пасмурно' in description.lower():
+        advice.append("☁️ Пасмурно. Возьмите лёгкую куртку на всякий случай.")
+    elif 'ясно' in description.lower() or 'солнечно' in description.lower():
+        advice.append("☀️ Солнечно! Не забудьте солнцезащитные очки и крем от загара.")
+
+    if wind_speed > 15:
+        advice.append("💨 Сильный ветер. Возьмите ветровку или куртку.")
+    elif wind_speed > 8:
+        advice.append("🍃 Ветрено. Лёгкая ветровка будет кстати.")
+
+    if humidity > 85:
+        advice.append("💧 Очень высокая влажность. Возможен туман или осадки.")
+    elif humidity > 70:
+        advice.append("💧 Повышенная влажность.")
+
+    return advice
+
+
+@app.route('/')
+def index():
+    today = datetime.now().strftime('%Y-%m-%d')
+    max_date = (datetime.now() + timedelta(days=5)).strftime('%Y-%m-%d')  # ИСПРАВЛЕНО: убран разрыв строки
+    return render_template('index.html', today=today, max_date=max_date)
+@app.route('/get_weather', methods=['POST'])
+def get_weather_api():
+    data = request.get_json()
+    city = data.get('city', '').strip()
+    date = data.get('date', '').strip()
+
+    if not city:
+        return jsonify({'success': False, 'error': 'Пожалуйста, введите город'})
+
+    if not date:
+        return jsonify({'success': False, 'error': 'Пожалуйста, выберите дату'})
+
+    try:
+        input_date = datetime.strptime(date, "%Y-%m-%d")
+        today = datetime.now()
+        max_date = today + timedelta(days=5)
+
+        if input_date < today - timedelta(days=1):
+            return jsonify({'success': False, 'error': 'Нельзя получить прогноз за прошедшие даты!'})
+        if input_date > max_date:
+            return jsonify({'success': False, 'error': 'Прогноз доступен только на 5 дней вперёд!'})
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Неверный формат даты!'})
+
+    weather_data = get_weather(city, date)
+
+    if not weather_data['success']:
+        return jsonify(weather_data)
+
+    advice = get_weather_advice(weather_data)
+
+    return jsonify({
+        'success': True,
+        'weather': weather_data,
+        'advice': advice
+    })
+
+
+def open_browser():
+    time.sleep(2)
+    webbrowser.open('http://127.0.0.1:8000/')
+
+
+if __name__ == '__main__':  # ✅ ИСПРАВЛЕНО: два подчёркивания!
+    print("🚀 Запуск сервера погоды...")
+    print("🌐 Откройте в браузере: http://127.0.0.1:8000/")
+    threading.Thread(target=open_browser).start()
+    app.run(debug=True, host='127.0.0.1', port=8000)
