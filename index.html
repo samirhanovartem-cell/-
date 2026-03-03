@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🌤️ Прогноз погоды</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>🌤️ Прогноз погоды</h1>
+
+        <div class="search-form">
+            <input type="text" id="city" placeholder="Введите город..." autocomplete="off">
+            <input type="date" id="date" min="{{ today }}" max="{{ max_date }}" value="{{ today }}">
+            <button onclick="getWeather()">Показать прогноз</button>
+        </div>
+
+        <div id="loading" class="loading" style="display: none;">
+            <div class="spinner"></div>
+            <p>Загрузка прогноза...</p>
+        </div>
+
+        <div id="result" class="result" style="display: none;">
+            <div class="weather-card">
+                <div class="weather-header">
+                    <h2 id="city-name">Город</h2>
+                    <p id="date-display">Дата</p>
+                </div>
+
+                <div class="weather-main">
+                    <img id="weather-icon" src="" alt="Погода">
+                    <div class="temp-container">
+                        <span id="temperature" class="temp">--°C</span>
+                        <p id="description">--</p>
+                    </div>
+                </div>
+
+                <div class="weather-details">
+                    <div class="detail-item">
+                        <span class="detail-label">Ощущается как:</span>
+                        <span id="feels-like" class="detail-value">--°C</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Влажность:</span>
+                        <span id="humidity" class="detail-value">--%</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Ветер:</span>
+                        <span id="wind" class="detail-value">-- м/с</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Давление:</span>
+                        <span id="pressure" class="detail-value">-- гПа</span>
+                    </div>
+                </div>
+
+                <div class="advice-section">
+                    <h3>💡 Советы:</h3>
+                    <ul id="advice-list"></ul>
+                </div>
+            </div>
+        </div>
+
+        <div id="error" class="error" style="display: none;"></div>
+    </div>
+
+    <script>
+    async function getWeather() {
+        const cityInput = document.getElementById('city');
+        const dateInput = document.getElementById('date');
+        const loading = document.getElementById('loading');
+        const result = document.getElementById('result');
+        const error = document.getElementById('error');
+
+        const city = cityInput.value.trim();
+        const date = dateInput.value;
+
+        if (!city) {
+            showError('Пожалуйста, введите город');
+            return;
+        }
+
+        if (!date) {
+            showError('Пожалуйста, выберите дату');
+            return;
+        }
+
+        result.style.display = 'none';
+        error.style.display = 'none';
+        loading.style.display = 'block';
+
+        try {
+            const response = await fetch('/get_weather', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ city: city, date: date })
+            });
+
+            const data = await response.json();
+            loading.style.display = 'none';
+
+            if (data.success) {
+                displayWeather(data.weather, data.advice);
+            } else {
+                showError(data.error || 'Ошибка получения данных');
+            }
+        } catch (err) {
+            loading.style.display = 'none';
+            showError('Ошибка подключения к серверу');
+        }
+    }
+
+    function displayWeather(weather, advice) {
+        document.getElementById('city-name').textContent = `${weather.city}, ${weather.country}`;
+        document.getElementById('date-display').textContent = formatDate(weather.date);
+        document.getElementById('weather-icon').src = `https://openweathermap.org/img/wn/${weather.icon}@2x.png`;
+        document.getElementById('temperature').textContent = `${weather.temp}°C`;
+        document.getElementById('description').textContent = weather.description;
+        document.getElementById('feels-like').textContent = `${weather.feels_like}°C`;
+        document.getElementById('humidity').textContent = `${weather.humidity}%`;
+        document.getElementById('wind').textContent = `${weather.wind_speed} м/с`;
+        document.getElementById('pressure').textContent = `${weather.pressure} гПа`;
+
+        const adviceList = document.getElementById('advice-list');
+        adviceList.innerHTML = '';
+        advice.forEach(item => {
+            const li = document.createElement('li');
+            li.textContent = item;
+            adviceList.appendChild(li);
+        });
+
+        document.getElementById('result').style.display = 'block';
+    }
+
+    function showError(message) {
+        const error = document.getElementById('error');
+        error.textContent = message;
+        error.style.display = 'block';
+    }
+
+    function formatDate(dateStr) {
+        const date = new Date(dateStr);
+        const options = { year: 'numeric', month: 'long', day: 'numeric' };
+        return date.toLocaleDateString('ru-RU', options);
+    }
+
+    document.getElementById('city').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            getWeather();
+        }
+    });
+</script>
+</body>
+</html>
